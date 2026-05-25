@@ -1,0 +1,9 @@
+{
+    "id": "com.game.minesweeper",
+    "name": "扫雷",
+    "version": "1.0.0",
+    "author": "姓胡的胡萝卜 & DeepSeek",
+    "description": "经典扫雷游戏",
+    "icon": "file://userdisk/PenMods/plugins/minesweeper/image/11.png",
+    "main_qml": "main.qml"
+}

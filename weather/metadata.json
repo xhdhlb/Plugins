@@ -1,0 +1,9 @@
+{
+    "id": "com.weather.viewer",
+    "name": "天气",
+    "version": "1.0.3",
+    "author": "姓胡的胡萝卜 & DeepSeek",
+    "description": "使用 Open-Meteo 的天气插件，支持逐日、逐小时预报。",
+    "icon": "file://userdisk/PenMods/plugins/weather/icon.png",
+    "main_qml": "main.qml"
+}

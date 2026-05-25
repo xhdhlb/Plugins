@@ -1,0 +1,9 @@
+{
+    "id": "com.game.2048",
+    "name": "2048",
+    "version": "1.0.1",
+    "author": "姓胡的胡萝卜 & DeepSeek",
+    "description": "经典的2048数字拼图游戏",
+    "icon": "file://userdisk/PenMods/plugins/2048/icon.png",
+    "main_qml": "main.qml"
+}

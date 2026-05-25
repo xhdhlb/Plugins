@@ -1,0 +1,9 @@
+{
+    "id": "com.text.editor",
+    "name": "文本编辑器",
+    "version": "1.0.1",
+    "author": "姓胡的胡萝卜 & DeepSeek",
+    "description": "支持打开、编辑和保存任意文本文件。",
+    "icon": "qrc:/images/home/home-plugin.png",
+    "main_qml": "main.qml"
+}

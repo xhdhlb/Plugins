@@ -1,0 +1,9 @@
+{
+    "id": "com.example.calculator",
+    "name": "计算器",
+    "version": "1.0.0",
+    "author": "DeepSeek",
+    "description": "计算器",
+    "icon": "qrc:/images/home/home-plugin.png",
+    "main_qml": "main.qml"
+}

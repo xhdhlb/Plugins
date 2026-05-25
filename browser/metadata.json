@@ -1,0 +1,9 @@
+{
+    "id": "com.text.browser",
+    "name": "文本浏览器",
+    "version": "1.0.5",
+    "author": "姓胡的胡萝卜 & DeepSeek",
+    "description": "以文本形式浏览网页，支持打开URL或必应搜索。",
+    "icon": "qrc:/images/home/home-plugin.png",
+    "main_qml": "main.qml"
+}
