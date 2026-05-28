@@ -10,6 +10,7 @@ Rectangle {
 
     signal backButtonClicked()
 
+    // 基本状态
     property string currentUrl: ""
     property string pageTitle: ""
     property bool isLoading: false
@@ -19,33 +20,32 @@ Rectangle {
     property var xhr: null
     property int currentRequestId: 0
 
+    // 历史
     property var historyList: []
     property int historyIndex: -1
     property bool ignoreHistoryAdd: false
-
     property string preLoadUrl: ""
 
+    // 浏览设置
     property real zoomFactor: 1.0
     property bool wrapText: true
     property bool enableHorizontalScroll: false
     property bool showRawContent: false
-
     property string customSearchTemplate: "https://cn.bing.com/search?q=%1"
 
-    // 默认预设生成函数，每次返回全新数组，避免引用污染
-    function getDefaultPresets() {
-        return [
-            { name: "一言", url: "https://v1.hitokoto.cn/?c=a&encode=text" },
-            { name: "必应", url: "https://cn.bing.com" },
-            { name: "哔哩哔哩", url: "https://www.bilibili.com" }
-        ];
-    }
-    property var presets: getDefaultPresets()
+    // 默认书签
+    property var defaultPresets: [
+        { name: "一言", url: "https://v1.hitokoto.cn/?c=a&encode=text" },
+        { name: "必应", url: "https://cn.bing.com" },
+        { name: "哔哩哔哩", url: "https://www.bilibili.com" }
+    ]
+    property var presets: defaultPresets
 
     property bool menuVisible: false
     property bool keyboardPending: false
     property var db: null
 
+    // ---------- 数据库 ----------
     function initDatabase() {
         db = LocalStorage.openDatabaseSync("TextBrowser", "1.0", "存储浏览状态", 100000)
         db.transaction(function(tx) {
@@ -93,63 +93,112 @@ Rectangle {
                 if (state.enableHorizontalScroll !== undefined) enableHorizontalScroll = state.enableHorizontalScroll
                 if (state.showRawContent !== undefined) showRawContent = state.showRawContent
                 if (state.customSearchTemplate !== undefined) customSearchTemplate = state.customSearchTemplate
-                if (state.presets !== undefined) presets = state.presets
-                else presets = getDefaultPresets()
-            } else {
-                // 首次运行，使用默认
-                presets = getDefaultPresets()
+                if (state.presets !== undefined) presets = state.presets  // 覆盖当前书签
             }
         })
     }
 
+    // ---------- 文本处理 ----------
     function extractTitleFromRaw(html) {
         var match = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)
         return match ? match[1].trim().replace(/\s+/g, ' ') : "无标题"
     }
-
-    function isHtmlContent(text) {
-        var lower = text.substring(0, 1000).toLowerCase()
-        return /<html\b/i.test(lower) || /<body\b/i.test(lower)
-    }
-
-    function escapeHtml(text) {
-        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    }
+    function isHtmlContent(text) { return /<html\b/i.test(text) || /<body\b/i.test(text) }
+    function escapeHtml(text) { return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }
 
     function formatUrl(input) {
         var trimmed = input.trim()
         if (trimmed === "") return ""
         if (trimmed.match(/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//)) return trimmed
         if (trimmed.match(/^\/\//)) return "https:" + trimmed
-        if (trimmed[0] === '/' || trimmed[0] === '~' || trimmed.match(/^[a-zA-Z]:\\/)) {
-            return "file://" + trimmed
-        }
+        if (trimmed[0] === '/' || trimmed[0] === '~' || trimmed.match(/^[a-zA-Z]:\\/)) return "file://" + trimmed
         if (trimmed.indexOf('.') > 0 && trimmed.indexOf(' ') === -1) return "https://" + trimmed
         if (trimmed === "localhost" || trimmed.match(/^\d+\.\d+\.\d+\.\d+$/)) return "http://" + trimmed
         return "search:" + trimmed
     }
 
+    // ---------- 改进的相对URL解析 ----------
+    function resolveUrl(base, relative) {
+        if (!relative) return base
+        // 已经是绝对URL（含协议）
+        if (relative.match(/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//)) return relative
+        // 以 // 开头，补全协议
+        if (relative.indexOf("//") === 0) {
+            var m = base.match(/^([a-zA-Z][a-zA-Z0-9+\-.]*):\/\//)
+            return (m ? m[1] : "https") + ":" + relative
+        }
+
+        // 提取基URL的协议、主机、路径
+        var baseMatch = base.match(/^([a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^\/]+)(.*)$/)
+        if (!baseMatch) return base  // 基URL格式错误，直接返回
+        var origin = baseMatch[1]         // https://zm.wwoyun.cn
+        var basePath = baseMatch[2] || "/" // 默认为根路径
+
+        // 移除基路径中的hash和search部分
+        var hashIdx = basePath.indexOf('#')
+        if (hashIdx >= 0) basePath = basePath.substring(0, hashIdx)
+        var queryIdx = basePath.indexOf('?')
+        if (queryIdx >= 0) basePath = basePath.substring(0, queryIdx)
+
+        // 处理相对路径
+        if (relative[0] === '/') {
+            // 绝对路径（相对于主机）
+            return origin + relative
+        } else {
+            // 相对路径，先去掉基路径最后一部分的文件名
+            var dir = basePath.substring(0, basePath.lastIndexOf('/') + 1)
+            if (dir === "") dir = "/"
+
+            // 处理 ./ 或 ../ 
+            var combined = dir + relative
+            // 分割路径
+            var parts = combined.split('/')
+            var stack = []
+            for (var i = 0; i < parts.length; i++) {
+                var p = parts[i]
+                if (p === "..") {
+                    if (stack.length > 0) stack.pop()
+                } else if (p !== "." && p !== "") {
+                    stack.push(p)
+                }
+            }
+            var newPath = "/" + stack.join('/')
+            // 如果 relative 包含查询参数或 hash，需要保留
+            var extra = ""
+            var qIdx = relative.indexOf('?')
+            var hIdx = relative.indexOf('#')
+            if (qIdx >= 0) {
+                extra = relative.substring(qIdx)
+                newPath += extra
+            } else if (hIdx >= 0) {
+                extra = relative.substring(hIdx)
+                newPath += extra
+            }
+            return origin + newPath
+        }
+    }
+
+    // ---------- 页面加载 ----------
     function loadUrl(url) {
         if (!url) return
         if (url.indexOf("search:") === 0) {
-            var query = url.substring(7)
-            url = customSearchTemplate.replace("%1", encodeURIComponent(query))
+            url = customSearchTemplate.replace("%1", encodeURIComponent(url.substring(7)))
         }
         preLoadUrl = currentUrl
         if (xhr && xhr.readyState === XMLHttpRequest.LOADING) {
-            xhr.abort()
-            xhr = null
+            xhr.abort(); xhr = null
         }
         isLoading = true
         errorMessage = ""
         currentUrl = url
+
+        // 历史记录管理
         if (!ignoreHistoryAdd) {
             if (historyIndex >= 0 && historyIndex < historyList.length - 1) {
                 historyList = historyList.slice(0, historyIndex + 1)
             }
             if (historyList.length >= 50) {
-                historyList.shift()
-                historyIndex--
+                historyList.shift(); historyIndex--
             }
             historyList.push(url)
             historyIndex = historyList.length - 1
@@ -168,118 +217,53 @@ Rectangle {
                         pageTitle = "无标题"
                         errorMessage = "网页内容过大，无法显示 (超过 " + (maxChars/1000).toFixed(0) + "k 字符)"
                         pageContent = ""
-                        xhr = null
-                        saveState()
-                        return
+                        xhr = null; saveState(); return
                     }
                     pageTitle = extractTitleFromRaw(raw)
-                    if (showRawContent) {
-                        pageContent = "<pre>" + escapeHtml(raw) + "</pre>"
-                    } else if (isHtmlContent(raw)) {
-                        pageContent = raw
-                    } else {
-                        pageContent = "<pre>" + escapeHtml(raw) + "</pre>"
-                    }
+                    if (showRawContent) pageContent = "<pre>" + escapeHtml(raw) + "</pre>"
+                    else if (isHtmlContent(raw)) pageContent = raw
+                    else pageContent = "<pre>" + escapeHtml(raw) + "</pre>"
                 } else {
                     pageTitle = "无标题"
                     errorMessage = "加载失败: HTTP " + xhr.status
                     pageContent = ""
                 }
-                saveState()
-                xhr = null
+                saveState(); xhr = null
             }
         }
         xhr.onerror = function() {
             if (reqId !== currentRequestId) return
-            pageTitle = "无标题"
-            isLoading = false
-            errorMessage = "网络错误，请检查连接"
-            pageContent = ""
-            saveState()
-            xhr = null
+            pageTitle = "无标题"; isLoading = false
+            errorMessage = "网络错误，请检查连接"; pageContent = ""
+            saveState(); xhr = null
         }
-        xhr.open("GET", url)
-        xhr.send()
-    }
-
-    // 修复相对 URL 拼接
-    function resolveUrl(base, relative) {
-        if (!relative) return base
-        if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:\/\//.test(relative)) return relative
-        if (relative.indexOf("//") === 0) {
-            var m = base.match(/^([a-zA-Z][a-zA-Z0-9+\-.]*):\/\//)
-            return (m ? m[1] : "https") + ":" + relative
-        }
-
-        // 提取 origin
-        var originMatch = base.match(/^([a-zA-Z][a-zA-Z0-9+\-.]*:\/\/[^\/]+)/)
-        var origin = originMatch ? originMatch[1] : ""
-        var path = base.substring(origin.length)
-        if (path === "") path = "/"
-
-        if (relative[0] === '/') {
-            return origin + relative
-        }
-
-        // 计算基础目录
-        var baseDir = path.substring(0, path.lastIndexOf('/') + 1)
-        var stack = baseDir.split('/').filter(function(s) { return s !== "" })
-        var relParts = relative.split('/')
-        for (var i = 0; i < relParts.length; i++) {
-            var part = relParts[i]
-            if (part === "..") {
-                if (stack.length > 0) stack.pop()
-            } else if (part !== "." && part !== "") {
-                stack.push(part)
-            }
-        }
-        var resolvedPath = "/" + stack.join('/')
-        return origin + resolvedPath
+        xhr.open("GET", url); xhr.send()
     }
 
     function handleLinkClick(href) { loadUrl(resolveUrl(currentUrl, href)) }
 
+    // ---------- 导航 ----------
     function goBack() {
-        if (currentUrl === "") {
-            if (historyList.length > 0 && historyIndex >= 0) {
-                ignoreHistoryAdd = true
-                loadUrl(historyList[historyIndex])
-            }
+        if (currentUrl === "" && historyList.length > 0 && historyIndex >= 0) {
+            ignoreHistoryAdd = true; loadUrl(historyList[historyIndex])
         } else if (historyIndex > 0) {
-            ignoreHistoryAdd = true
-            historyIndex--
-            loadUrl(historyList[historyIndex])
+            ignoreHistoryAdd = true; historyIndex--; loadUrl(historyList[historyIndex])
         }
     }
-
     function goForward() {
         if (historyIndex < historyList.length - 1) {
-            ignoreHistoryAdd = true
-            historyIndex++
-            loadUrl(historyList[historyIndex])
+            ignoreHistoryAdd = true; historyIndex++; loadUrl(historyList[historyIndex])
         }
     }
-
     function refresh() { if (currentUrl) { ignoreHistoryAdd = true; loadUrl(currentUrl) } }
-
     function goHome() {
-        if (xhr && xhr.readyState === XMLHttpRequest.LOADING) {
-            currentRequestId = -1
-            xhr.abort()
-            xhr = null
-        }
-        isLoading = false
-        errorMessage = ""
-        currentUrl = ""
-        pageContent = ""
-        pageTitle = ""
-        saveState()
+        if (xhr && xhr.readyState === XMLHttpRequest.LOADING) { currentRequestId = -1; xhr.abort(); xhr = null }
+        isLoading = false; errorMessage = ""; currentUrl = ""; pageContent = ""; pageTitle = ""; saveState()
     }
-
     function clearHistory() { historyList = []; historyIndex = -1; saveState() }
-
     function requestExit() { saveState(); backButtonClicked() }
 
+    // ---------- 键盘 ----------
     function _createKeyboard(initialText, callback) {
         if (qmlGlobal.inputPageShowing || keyboardPending) return
         keyboardPending = true
@@ -288,138 +272,74 @@ Rectangle {
             var incubator = comp.incubateObject(pagePopHelper.containerItem)
             if (incubator.status !== Component.Ready) {
                 incubator.onStatusChanged = function(status) {
-                    if (status === Component.Ready) {
-                        _setupKeyboard(incubator.object, initialText, callback)
-                    }
+                    if (status === Component.Ready) _setupKeyboard(incubator.object, initialText, callback)
                 }
-            } else {
-                _setupKeyboard(incubator.object, initialText, callback)
-            }
-        } else {
-            keyboardPending = false
-        }
+            } else { _setupKeyboard(incubator.object, initialText, callback) }
+        } else { keyboardPending = false }
     }
-
-    function _setupKeyboard(keyboardPage, initialText, callback) {
-        keyboardPage.backButtonClicked.connect(function() {
-            qmlGlobal.inputPageShowing = false
-            keyboardPage.todoDestroy()
-            keyboardPage = null
-            keyboardPending = false
-        })
-        keyboardPage.inputFinished.connect(function(content) {
-            qmlGlobal.inputPageShowing = false
-            keyboardPage.todoDestroy()
-            if (content && callback) callback(content)
-            keyboardPending = false
-        })
-        keyboardPage.enterText(initialText)
-        keyboardPage.show()
-        qmlGlobal.inputPageShowing = true
+    function _setupKeyboard(kp, initialText, callback) {
+        kp.backButtonClicked.connect(function() { qmlGlobal.inputPageShowing = false; kp.todoDestroy(); kp = null; keyboardPending = false })
+        kp.inputFinished.connect(function(content) { qmlGlobal.inputPageShowing = false; kp.todoDestroy(); if (content && callback) callback(content); keyboardPending = false })
+        kp.enterText(initialText); kp.show(); qmlGlobal.inputPageShowing = true
     }
+    function requestKeyboard(initialText) { _createKeyboard(initialText, function(c) { handleInputSubmit(c) }) }
+    function handleInputSubmit(text) { var f = formatUrl(text); if (f && f !== currentUrl) loadUrl(f) }
 
-    function requestKeyboard(initialText) {
-        _createKeyboard(initialText, function(content) { handleInputSubmit(content) })
-    }
-
-    function editSearchTemplate() {
-        _createKeyboard(customSearchTemplate, function(newTemplate) {
-            if (newTemplate && newTemplate.trim() !== "") {
-                var t = newTemplate.trim()
-                if (t.indexOf("%1") === -1) {
-                    if (settingsLoader.item) settingsLoader.item.showTemplateWarning = true
-                    return
-                }
-                customSearchTemplate = t
-                saveState()
-            }
+    // ---------- 书签编辑 ----------
+    function editPreset(index) {
+        if (index < 0 || index >= presets.length) return
+        var preset = presets[index]
+        _createKeyboard(preset.name + "," + preset.url, function(newStr) {
+            if (!newStr) return
+            var processed = newStr.replace(/[\r\n]/g, "").trim()
+            if (processed === "") { presets.splice(index, 1); presets = presets; saveState(); return }
+            var comma = processed.indexOf(",")
+            var name, url
+            if (comma === -1) { name = processed; url = processed }
+            else { name = processed.substring(0, comma).trim(); url = processed.substring(comma + 1).trim() }
+            if (name === "" || url === "") { presets.splice(index, 1) }
+            else { presets[index].name = name; presets[index].url = url }
+            presets = presets; saveState()
         })
     }
-
-    function handleInputSubmit(text) {
-        var formatted = formatUrl(text)
-        if (!formatted) return
-        if (formatted === currentUrl) return
-        loadUrl(formatted)
+    function addPreset() {
+        if (presets.length >= 20) return
+        presets.push({ name: "书签", url: "https://" }); presets = presets; saveState()
     }
 
+    // ---------- 历史/设置页面 ----------
     function showHistoryPage() { menuVisible = false; historyLoader.show() }
     function closeHistory() { historyLoader.hide() }
-
-    function handleHistoryUrlClicked(url, idx) {
-        ignoreHistoryAdd = true
-        historyIndex = idx
-        loadUrl(url)
-        closeHistory()
-    }
-
+    function handleHistoryUrlClicked(url, idx) { ignoreHistoryAdd = true; historyIndex = idx; loadUrl(url); closeHistory() }
     function handleHistoryClear() { clearHistory() }
-
     function showSettingsPage() { menuVisible = false; settingsLoader.show() }
     function closeSettings() { settingsLoader.hide() }
-
+    function editSearchTemplate() {
+        _createKeyboard(customSearchTemplate, function(newT) {
+            if (newT && newT.trim()) {
+                var t = newT.trim()
+                if (t.indexOf("%1") === -1) { if (settingsLoader.item) settingsLoader.item.showTemplateWarning = true; return }
+                customSearchTemplate = t; saveState()
+            }
+        })
+    }
     function zoomIn() { if (zoomFactor < 2.0) { zoomFactor = Math.min(2.0, zoomFactor + 0.25); saveState() } }
     function zoomOut() { if (zoomFactor > 0.25) { zoomFactor = Math.max(0.25, zoomFactor - 0.25); saveState() } }
     function resetZoom() { zoomFactor = 1.0; saveState() }
 
-    function editPreset(index) {
-        if (index < 0 || index >= presets.length) return
-        var preset = presets[index]
-        var initialStr = preset.name + "," + preset.url
-        _createKeyboard(initialStr, function(newStr) {
-            if (newStr === undefined || newStr === null) return
-            var processed = newStr.replace(/[\r\n]/g, "").trim()
-            if (processed === "") {
-                presets.splice(index, 1)
-                presets = presets
-                saveState()
-                return
-            }
-            var commaIdx = processed.indexOf(",")
-            var name, url
-            if (commaIdx === -1) {
-                name = processed
-                url = processed
-            } else {
-                name = processed.substring(0, commaIdx).trim()
-                url = processed.substring(commaIdx + 1).trim()
-            }
-            if (name === "" || url === "") {
-                presets.splice(index, 1)
-            } else {
-                presets[index].name = name
-                presets[index].url = url
-            }
-            presets = presets
-            saveState()
-        })
-    }
-
-    function addPreset() {
-        if (presets.length >= 20) return
-        var newPreset = { name: "书签", url: "https://" }
-        presets.push(newPreset)
-        presets = presets
-        saveState()
-    }
-
+    // ---------- UI 布局 ----------
     TitleBar {
         id: titleBar
-        width: parent.width
-        height: 20
+        width: parent.width; height: 20
         title: errorMessage !== "" ? "无标题" : (currentUrl ? pageTitle : "主页")
     }
 
     Column {
         anchors.top: titleBar.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
+        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
 
         Item {
-            width: parent.width
-            height: parent.height - 30
-            clip: true
+            width: parent.width; height: parent.height - 30; clip: true
             Flickable {
                 id: flickable
                 anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 5
@@ -429,9 +349,8 @@ Rectangle {
                 boundsBehavior: Flickable.StopAtBounds; clip: true
                 Text {
                     id: contentText
-                    width: wrapText ? flickable.width / zoomFactor : contentText.implicitWidth
-                    textFormat: Text.RichText
-                    wrapMode: wrapText ? Text.Wrap : Text.NoWrap
+                    width: wrapText ? flickable.width / zoomFactor : implicitWidth
+                    textFormat: Text.RichText; wrapMode: wrapText ? Text.Wrap : Text.NoWrap
                     font.family: "Microsoft YaHei"; font.pixelSize: 13; color: "#000000"
                     text: pageContent; visible: pageContent !== ""
                     transform: Scale { origin.x: 0; origin.y: 0; xScale: zoomFactor; yScale: zoomFactor }
@@ -444,11 +363,10 @@ Rectangle {
                 }
             }
 
+            // 主页书签列表
             Item {
                 id: homePresets
-                anchors.top: parent.top
-                anchors.left: parent.left
-                anchors.right: parent.right
+                anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
                 height: parent.height
                 visible: pageContent === "" && errorMessage === "" && currentUrl === ""
                 z: 1
@@ -457,79 +375,49 @@ Rectangle {
                     anchors.fill: parent
                     model: presets
                     delegate: Rectangle {
-                        width: parent.width
-                        height: 30
+                        width: parent.width; height: 30
                         color: itemArea.pressed ? "#E0E0E0" : "transparent"
                         Row {
-                            anchors.fill: parent
-                            anchors.leftMargin: 5
-                            anchors.rightMargin: 5
+                            anchors.fill: parent; anchors.leftMargin: 5; anchors.rightMargin: 5
                             Text {
-                                anchors.centerIn: parent
-                                width: parent.width
-                                horizontalAlignment: Text.AlignHCenter
-                                text: modelData.url
-                                font.family: "Microsoft YaHei"
-                                font.pixelSize: 16
-                                color: "#000000"
+                                anchors.centerIn: parent; width: parent.width; horizontalAlignment: Text.AlignHCenter
+                                text: modelData.url; font.family: "Microsoft YaHei"; font.pixelSize: 16; color: "#000000"
                                 visible: modelData.name === modelData.url
                             }
                             Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 90
-                                text: modelData.name.substring(0, 5)
-                                font.family: "Microsoft YaHei"
-                                font.pixelSize: 16
-                                color: "#000000"
+                                anchors.verticalCenter: parent.verticalCenter; width: 90
+                                text: modelData.name.substring(0,5); font.family: "Microsoft YaHei"; font.pixelSize: 16; color: "#000000"
                                 visible: modelData.name !== modelData.url
                             }
                             Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.right: parent.right
-                                width: parent.width - 90
-                                text: modelData.url
-                                font.family: "Microsoft YaHei"
-                                font.pixelSize: 16
-                                color: "#000000"
-                                elide: Text.ElideRight
-                                horizontalAlignment: Text.AlignRight
-                                visible: modelData.name !== modelData.url
+                                anchors.verticalCenter: parent.verticalCenter; anchors.right: parent.right; width: parent.width - 90
+                                text: modelData.url; font.family: "Microsoft YaHei"; font.pixelSize: 16; color: "#000000"
+                                elide: Text.ElideRight; horizontalAlignment: Text.AlignRight; visible: modelData.name !== modelData.url
                             }
                         }
                         MouseArea {
-                            id: itemArea
-                            anchors.fill: parent
+                            id: itemArea; anchors.fill: parent
                             onClicked: loadUrl(modelData.url)
                             onPressAndHold: editPreset(index)
                         }
                     }
                     footer: Item {
-                        width: parent.width
-                        height: presets.length < 20 ? 30 : 0
+                        width: parent.width; height: presets.length < 20 ? 30 : 0
                         visible: presets.length < 20
                         Rectangle {
-                            anchors.fill: parent
-                            color: plusArea.pressed ? "#E0E0E0" : "transparent"
+                            anchors.fill: parent; color: plusArea.pressed ? "#E0E0E0" : "transparent"
                             Text {
-                                anchors.centerIn: parent
-                                text: "添加书签"
-                                font.family: "Microsoft YaHei"
-                                font.pixelSize: 16
-                                color: "#000000"
+                                anchors.centerIn: parent; text: "添加书签"; font.family: "Microsoft YaHei"; font.pixelSize: 16; color: "#000000"
                             }
-                            MouseArea {
-                                id: plusArea
-                                anchors.fill: parent
-                                onClicked: addPreset()
-                            }
+                            MouseArea { id: plusArea; anchors.fill: parent; onClicked: addPreset() }
                         }
                     }
-                    boundsBehavior: Flickable.StopAtBounds
-                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds; clip: true
                 }
             }
         }
 
+        // 底部栏
         Rectangle {
             width: parent.width; height: 30; color: "#EEEEEE"; border.color: "#CCCCCC"; border.width: 0.5
             Row {
@@ -538,8 +426,7 @@ Rectangle {
                     width: parent.width - 53; height: 26; anchors.verticalCenter: parent.verticalCenter; radius: 3
                     color: "#FFFFFF"; border.color: "#CCCCCC"; border.width: 0.5
                     Text {
-                        anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
-                        verticalAlignment: Text.AlignVCenter
+                        anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6; verticalAlignment: Text.AlignVCenter
                         text: currentUrl ? currentUrl : "输入网址或搜索词"
                         font.family: "Microsoft YaHei"; font.pixelSize: 12; color: currentUrl ? "#000000" : "#AAAAAA"
                         elide: Text.ElideRight
@@ -556,21 +443,18 @@ Rectangle {
         }
     }
 
+    // 加载中提示
     Rectangle {
         visible: isLoading; x: (root.width - 135) / 2; y: 20; z: 10; width: 135; height: 30; radius: 6
         color: "#FFFFFF"; border.color: "#DDDDDD"; border.width: 1
         Text { anchors.centerIn: parent; text: "加载中（点击取消）"; font.family: "Microsoft YaHei"; font.pixelSize: 13; color: "#000000" }
-        MouseArea {
-            anchors.fill: parent
-            onClicked: {
-                if (xhr) { currentRequestId = 0; xhr.abort(); isLoading = false; currentUrl = preLoadUrl }
-            }
-        }
+        MouseArea { anchors.fill: parent; onClicked: { if (xhr) { currentRequestId = 0; xhr.abort(); isLoading = false; currentUrl = preLoadUrl } } }
     }
 
+    // 菜单
     Rectangle {
-        visible: menuVisible; x: parent.width - 156 - 6; y: parent.height - 30 - 96 - 2; width: 156; height: 96
-        radius: 4; color: "#FFFFFF"; border.color: "#AAAAAA"; border.width: 1; z: 98
+        visible: menuVisible; x: parent.width - 156 - 6; y: parent.height - 30 - 96 - 2; width: 156; height: 96; radius: 4
+        color: "#FFFFFF"; border.color: "#AAAAAA"; border.width: 1; z: 98
         Grid {
             anchors.fill: parent; anchors.margins: 3; columns: 3; rows: 3; spacing: 0
             MenuItem { text: "返回"; enabled: (currentUrl === "" && historyList.length > 0) || historyIndex > 0; onTriggered: { goBack(); menuVisible = false } }
@@ -595,6 +479,7 @@ Rectangle {
         MouseArea { id: itemArea; anchors.fill: parent; onClicked: parent.triggered() }
     }
 
+    // 历史页面加载器
     Loader {
         id: historyLoader; anchors.fill: parent; z: 95; active: false; source: "history.qml"
         onLoaded: {
@@ -603,10 +488,10 @@ Rectangle {
             item.clearHistoryRequested.connect(handleHistoryClear)
             item.backRequested.connect(closeHistory)
         }
-        function show() { active = true }
-        function hide() { active = false }
+        function show() { active = true } function hide() { active = false }
     }
 
+    // 设置页面加载器
     Loader {
         id: settingsLoader; anchors.fill: parent; z: 95; active: false; source: "settings.qml"
         onLoaded: {
@@ -621,30 +506,20 @@ Rectangle {
             item.showRawContentToggled.connect(function(val) { showRawContent = val; saveState() })
             item.editSearchTemplate.connect(editSearchTemplate)
             item.resetSettingsRequested.connect(function() {
-                wrapText = true
-                enableHorizontalScroll = false
-                showRawContent = false
+                wrapText = true; enableHorizontalScroll = false; showRawContent = false
                 customSearchTemplate = "https://cn.bing.com/search?q=%1"
-                presets = getDefaultPresets()   // 重置预设
-                saveState()
+                presets = defaultPresets; saveState()
             })
             item.backRequested.connect(closeSettings)
         }
-        function show() { active = true }
-        function hide() { active = false }
+        function show() { active = true } function hide() { active = false }
     }
 
     YPagePopHelper {
-        id: pagePopHelper
-        z: 99
-        property var containerItem: this
-        isShowing: qmlGlobal.inputPageShowing
-        objectName: "from_TextBrowser"
+        id: pagePopHelper; z: 99; property var containerItem: this
+        isShowing: qmlGlobal.inputPageShowing; objectName: "from_TextBrowser"
     }
 
-    Component.onCompleted: {
-        currentTime = Qt.formatDateTime(new Date(), "hh:mm:ss")
-        initDatabase()
-    }
+    Component.onCompleted: { initDatabase() }
     Component.onDestruction: { saveState() }
 }
